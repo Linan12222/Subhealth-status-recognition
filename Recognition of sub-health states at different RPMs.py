@@ -1,10 +1,10 @@
+import os
 import numpy as np
+import scipy.io
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import scipy.io
-import os
-import pandas as pd
 import random
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
@@ -53,22 +53,22 @@ class Simple1DCNN(nn.Module):
 
 # ==== 加载数据 ====
 def load_data():
-    all_files = os.listdir(DATASET_PATH)
-    health_files = [f for f in all_files if f.startswith("normal")]
-    subhealth_files = [f for f in all_files if any(f.startswith(p) for p in ["B007", "IR007", "OR007"])]
-    fault_files = [f for f in all_files if any(f.startswith(p) for p in ["B014", "IR014", "OR014", "B021", "IR021", "OR021"])]
+    health_files = [f for f in os.listdir(DATASET_PATH) if f.startswith("normal")]
+    subhealth_files = [f for f in os.listdir(DATASET_PATH) if any(f.startswith(p) for p in ["B007", "IR007", "OR007"])]
 
     data, labels, rpms = [], [], []
 
-    for file, label in zip([*health_files, *subhealth_files, *fault_files],
-                            [0]*len(health_files) + [1]*len(subhealth_files) + [2]*len(fault_files)):
+    for file, label in zip([*health_files, *subhealth_files],
+                            [0]*len(health_files) + [1]*len(subhealth_files)):
         filepath = os.path.join(DATASET_PATH, file)
         mat = scipy.io.loadmat(filepath)
         rpm_key = [k for k in mat if "RPM" in k]
         rpm = int(mat[rpm_key[0]].squeeze()) if rpm_key else 0
+
         key = [k for k in mat if "_DE_time" in k][0]
         signal = mat[key].squeeze()
         num_segments = len(signal) // SEGMENT_LENGTH
+
         for i in range(num_segments):
             segment = signal[i * SEGMENT_LENGTH:(i + 1) * SEGMENT_LENGTH]
             data.append(segment)
@@ -125,58 +125,47 @@ pca = PCA(n_components=PCA_DIM)
 X_train_pca = pca.fit_transform(X_train_scaled)
 X_test_pca = pca.transform(X_test_scaled)
 
-# === 三类状态空间建模 ===
-spaces = {}
-thresholds = {}
-for cls in [0, 1, 2]:
-    X_cls = X_train_pca[y_train == cls]
-    mu = X_cls.mean(axis=0)
-    cov_inv = np.linalg.inv(np.cov(X_cls.T))
-    dists = [mahalanobis(x, mu, cov_inv) for x in X_cls]
-    threshold = np.percentile(dists, 97) + THRESHOLD_MARGIN
-    spaces[cls] = (mu, cov_inv)
-    thresholds[cls] = threshold
+# === 构建状态空间 ===
+X_health = X_train_pca[y_train == 0]
+X_subhealth = X_train_pca[y_train == 1]
+mu_h = X_health.mean(axis=0)
+cov_h_inv = np.linalg.inv(np.cov(X_health.T))
+mu_s = X_subhealth.mean(axis=0)
+cov_s_inv = np.linalg.inv(np.cov(X_subhealth.T))
 
-# ==== 按转速评估 ====
+# === 针对每个转速进行评估 ===
 results = []
 for rpm in TARGET_RPMS:
     idx = rpm_test == rpm
     X = X_test_pca[idx]
     y = y_test[idx]
-    pred = []
 
+    pred = []
     for x in X:
-        d_all = {cls: mahalanobis(x, mu, cov_inv) for cls, (mu, cov_inv) in spaces.items()}
-        min_cls = min(d_all, key=d_all.get)
-        if d_all[min_cls] <= thresholds[min_cls]:
-            pred.append(min_cls)
+        d_h = mahalanobis(x, mu_h, cov_h_inv)
+        d_s = mahalanobis(x, mu_s, cov_s_inv)
+        if (d_s - d_h) > THRESHOLD_MARGIN:
+            pred.append(0)
         else:
-            pred.append(2)  # 兜底设为故障类
+            pred.append(1)
 
     y = np.array(y)
     pred = np.array(pred)
-    cm = pd.crosstab(pd.Series(y, name='实际'), pd.Series(pred, name='预测'), rownames=['实际'], colnames=['预测'], dropna=False)
-    cm = cm.reindex(index=[0, 1, 2], columns=[0, 1, 2], fill_value=0)
+    TP = np.sum((y == 1) & (pred == 1))
+    FN = np.sum((y == 1) & (pred == 0))
+    FP = np.sum((y == 0) & (pred == 1))
+    TN = np.sum((y == 0) & (pred == 0))
+    recall = TP / (TP + FN) if (TP + FN) != 0 else 0.0
+    fpr = FP / (FP + TN) if (FP + TN) != 0 else 0.0
 
-    FP = cm.loc[0, 1] + cm.loc[0, 2]
-    TN = cm.loc[0, 0]
-    FPR = FP / (FP + TN) if (FP + TN) != 0 else 0.0
-    TP1 = cm.loc[1, 1]
-    FN1 = cm.loc[1, 0] + cm.loc[1, 2]
-    recall_sub = TP1 / (TP1 + FN1) if (TP1 + FN1) != 0 else 0.0
-    TP2 = cm.loc[2, 2]
-    FN2 = cm.loc[2, 0] + cm.loc[2, 1]
-    recall_fault = TP2 / (TP2 + FN2) if (TP2 + FN2) != 0 else 0.0
+    print(f"[转速{rpm}] TP: {TP}, FN: {FN}, FP: {FP}, TN: {TN}")
 
     results.append({
         "转速": rpm,
         "健康样本数": int(np.sum(y == 0)),
         "亚健康样本数": int(np.sum(y == 1)),
-        "严重故障样本数": int(np.sum(y == 2)),
-        "误报率（健康误判为异常）": round(FPR * 100, 5),
-        "亚健康识别率": round(recall_sub * 100, 5),
-        "故障识别率": round(recall_fault * 100, 5)
+        "误报率（健康误判为异常）": round(fpr * 100, 2),
+        "亚健康识别率": round(recall * 100, 2)
     })
 
-results_df = pd.DataFrame(results)
-print(results_df.to_string(index=False))
+print(pd.DataFrame(results))

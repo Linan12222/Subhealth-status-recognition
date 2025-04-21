@@ -10,7 +10,6 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from scipy.spatial.distance import mahalanobis
-from sklearn.metrics import confusion_matrix
 
 # ==== 固定随机种子 ====
 def set_seed(seed=42):
@@ -31,6 +30,7 @@ EPOCHS = 100
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
 DATASET_PATH = './dataset'
+TARGET_RPMS = [1725, 1796]
 THRESHOLD_MARGIN = 0.2  # 差值阈值
 
 # ==== CNN 网络结构 ====
@@ -55,12 +55,11 @@ class Simple1DCNN(nn.Module):
 def load_data():
     health_files = [f for f in os.listdir(DATASET_PATH) if f.startswith("normal")]
     subhealth_files = [f for f in os.listdir(DATASET_PATH) if any(f.startswith(p) for p in ["B007", "IR007", "OR007"])]
-    fault_files = [f for f in os.listdir(DATASET_PATH) if any(f.startswith(p) for p in ["B014", "IR014", "OR014", "B021", "IR021", "OR021"])]
 
     data, labels, rpms = [], [], []
 
-    for file, label in zip([*health_files, *subhealth_files, *fault_files],
-                            [0]*len(health_files) + [1]*len(subhealth_files) + [2]*len(fault_files)):
+    for file, label in zip([*health_files, *subhealth_files],
+                            [0]*len(health_files) + [1]*len(subhealth_files)):
         filepath = os.path.join(DATASET_PATH, file)
         mat = scipy.io.loadmat(filepath)
         rpm_key = [k for k in mat if "RPM" in k]
@@ -108,14 +107,17 @@ class CNNFeatureExtractor:
 # ==== 主流程 ====
 raw_data, raw_labels, raw_rpms = load_data()
 
-X_train, X_test, y_train, y_test = train_test_split(
-    raw_data, raw_labels, test_size=0.3, stratify=raw_labels, random_state=42)
+# === 划分训练集和测试集 ===
+X_train, X_test, y_train, y_test, rpm_train, rpm_test = train_test_split(
+    raw_data, raw_labels, raw_rpms, test_size=0.3, stratify=raw_labels, random_state=42)
 
+# === 提取特征 ===
 extractor = CNNFeatureExtractor()
 extractor.train(X_train, y_train)
 X_train_feat = extractor.extract(X_train)
 X_test_feat = extractor.extract(X_test)
 
+# === PCA降维 ===
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train_feat)
 X_test_scaled = scaler.transform(X_test_feat)
@@ -123,54 +125,39 @@ pca = PCA(n_components=PCA_DIM)
 X_train_pca = pca.fit_transform(X_train_scaled)
 X_test_pca = pca.transform(X_test_scaled)
 
-# === 三类状态空间建模 + 阈值设置 ===
-spaces = {}
-thresholds = {}
-for cls in [0, 1, 2]:
-    X_cls = X_train_pca[y_train == cls]
-    mu = X_cls.mean(axis=0)
-    cov_inv = np.linalg.inv(np.cov(X_cls.T))
-    dists = [mahalanobis(x, mu, cov_inv) for x in X_cls]
-    threshold = np.percentile(dists, 97) + THRESHOLD_MARGIN
-    spaces[cls] = (mu, cov_inv)
-    thresholds[cls] = threshold
+# === 构建状态空间 ===
+X_health = X_train_pca[y_train == 0]
+X_subhealth = X_train_pca[y_train == 1]
+mu_h = X_health.mean(axis=0)
+cov_h_inv = np.linalg.inv(np.cov(X_health.T))
+mu_s = X_subhealth.mean(axis=0)
+cov_s_inv = np.linalg.inv(np.cov(X_subhealth.T))
 
-# === 分类评估 ===
-y_pred = []
-for x in X_test_pca:
-    d_all = {cls: mahalanobis(x, mu, cov_inv) for cls, (mu, cov_inv) in spaces.items()}
-    min_cls = min(d_all, key=d_all.get)
-    if d_all[min_cls] <= thresholds[min_cls]:
-        y_pred.append(min_cls)
+# === 不区分转速，直接评估全体测试集 ===
+X = X_test_pca
+y = y_test
+
+pred = []
+for x in X:
+    d_h = mahalanobis(x, mu_h, cov_h_inv)
+    d_s = mahalanobis(x, mu_s, cov_s_inv)
+    if (d_s - d_h) > THRESHOLD_MARGIN:
+        pred.append(0)
     else:
-        y_pred.append(2)  # 兜底为故障类
+        pred.append(1)
 
-# === 输出混淆矩阵 ===
-cm = confusion_matrix(y_test, y_pred, labels=[0, 1, 2])
-df_result = pd.DataFrame(cm, index=['实际_健康', '实际_亚健康', '实际_故障'],
-                         columns=['预测_健康', '预测_亚健康', '预测_故障'])
-print(df_result)
+y = np.array(y)
+pred = np.array(pred)
 
-# === 亚健康类别的二分类评估 ===
-y_true_binary = (np.array(y_test) == 1).astype(int)
-y_pred_binary = (np.array(y_pred) == 1).astype(int)
-
-TP = np.sum((y_true_binary == 1) & (y_pred_binary == 1))
-FN = np.sum((y_true_binary == 1) & (y_pred_binary == 0))
-FP = np.sum((y_true_binary == 0) & (y_pred_binary == 1))
-TN = np.sum((y_true_binary == 0) & (y_pred_binary == 0))
+TP = np.sum((y == 1) & (pred == 1))
+FN = np.sum((y == 1) & (pred == 0))
+FP = np.sum((y == 0) & (pred == 1))
+TN = np.sum((y == 0) & (pred == 0))
 
 recall = TP / (TP + FN) if (TP + FN) != 0 else 0.0
 fpr = FP / (FP + TN) if (FP + TN) != 0 else 0.0
-precision = TP / (TP + FP) if (TP + FP) != 0 else 0.0
-f1 = 2 * precision * recall / (precision + recall) if (precision + recall) != 0 else 0.0
 
-print(f"\n【亚健康识别指标 - 二分类视角】")
-print(f"TP（真正）     = {TP}")
-print(f"FN（假负）     = {FN}")
-print(f"FP（假正）     = {FP}")
-print(f"TN（真负）     = {TN}")
-print(f"Recall（召回率）= {recall:.4f}")
-print(f"FPR（误报率）   = {fpr:.4f}")
-print(f"Precision（精确率）= {precision:.4f}")
-print(f"F1 Score        = {f1:.4f}")
+print(f"[总体评估] TP: {TP}, FN: {FN}, FP: {FP}, TN: {TN}")
+print(f"健康样本数: {int(np.sum(y == 0))}, 亚健康样本数: {int(np.sum(y == 1))}")
+print(f"误报率（健康误判为异常）: {round(fpr * 100, 2)}%")
+print(f"亚健康识别率: {round(recall * 100, 2)}%")

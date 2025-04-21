@@ -1,15 +1,16 @@
+import os
 import numpy as np
+import scipy.io
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import scipy.io
-import os
-import pandas as pd
 import random
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from scipy.spatial.distance import mahalanobis
+from sklearn.metrics import confusion_matrix
 
 # ==== 固定随机种子 ====
 def set_seed(seed=42):
@@ -25,12 +26,11 @@ set_seed(42)
 # ==== 参数设置 ====
 SEGMENT_LENGTH = 5120
 CNN_OUTPUT_DIM = 64
-PCA_DIM = 2
+PCA_DIM = 3
 EPOCHS = 100
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
 DATASET_PATH = './dataset'
-TARGET_RPMS = [1725, 1796]
 THRESHOLD_MARGIN = 0.2  # 差值阈值
 
 # ==== CNN 网络结构 ====
@@ -53,10 +53,9 @@ class Simple1DCNN(nn.Module):
 
 # ==== 加载数据 ====
 def load_data():
-    all_files = os.listdir(DATASET_PATH)
-    health_files = [f for f in all_files if f.startswith("normal")]
-    subhealth_files = [f for f in all_files if any(f.startswith(p) for p in ["B007", "IR007", "OR007"])]
-    fault_files = [f for f in all_files if any(f.startswith(p) for p in ["B014", "IR014", "OR014", "B021", "IR021", "OR021"])]
+    health_files = [f for f in os.listdir(DATASET_PATH) if f.startswith("normal")]
+    subhealth_files = [f for f in os.listdir(DATASET_PATH) if any(f.startswith(p) for p in ["B007", "IR007", "OR007"])]
+    fault_files = [f for f in os.listdir(DATASET_PATH) if any(f.startswith(p) for p in ["B014", "IR014", "OR014", "B021", "IR021", "OR021"])]
 
     data, labels, rpms = [], [], []
 
@@ -66,9 +65,11 @@ def load_data():
         mat = scipy.io.loadmat(filepath)
         rpm_key = [k for k in mat if "RPM" in k]
         rpm = int(mat[rpm_key[0]].squeeze()) if rpm_key else 0
+
         key = [k for k in mat if "_DE_time" in k][0]
         signal = mat[key].squeeze()
         num_segments = len(signal) // SEGMENT_LENGTH
+
         for i in range(num_segments):
             segment = signal[i * SEGMENT_LENGTH:(i + 1) * SEGMENT_LENGTH]
             data.append(segment)
@@ -107,17 +108,14 @@ class CNNFeatureExtractor:
 # ==== 主流程 ====
 raw_data, raw_labels, raw_rpms = load_data()
 
-# === 划分训练集和测试集 ===
-X_train, X_test, y_train, y_test, rpm_train, rpm_test = train_test_split(
-    raw_data, raw_labels, raw_rpms, test_size=0.3, stratify=raw_labels, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(
+    raw_data, raw_labels, test_size=0.3, stratify=raw_labels, random_state=42)
 
-# === 提取特征 ===
 extractor = CNNFeatureExtractor()
 extractor.train(X_train, y_train)
 X_train_feat = extractor.extract(X_train)
 X_test_feat = extractor.extract(X_test)
 
-# === PCA降维 ===
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train_feat)
 X_test_scaled = scaler.transform(X_test_feat)
@@ -125,7 +123,7 @@ pca = PCA(n_components=PCA_DIM)
 X_train_pca = pca.fit_transform(X_train_scaled)
 X_test_pca = pca.transform(X_test_scaled)
 
-# === 三类状态空间建模 ===
+# === 三类状态空间建模 + 阈值设置 ===
 spaces = {}
 thresholds = {}
 for cls in [0, 1, 2]:
@@ -137,46 +135,42 @@ for cls in [0, 1, 2]:
     spaces[cls] = (mu, cov_inv)
     thresholds[cls] = threshold
 
-# ==== 按转速评估 ====
-results = []
-for rpm in TARGET_RPMS:
-    idx = rpm_test == rpm
-    X = X_test_pca[idx]
-    y = y_test[idx]
-    pred = []
+# === 分类评估 ===
+y_pred = []
+for x in X_test_pca:
+    d_all = {cls: mahalanobis(x, mu, cov_inv) for cls, (mu, cov_inv) in spaces.items()}
+    min_cls = min(d_all, key=d_all.get)
+    if d_all[min_cls] <= thresholds[min_cls]:
+        y_pred.append(min_cls)
+    else:
+        y_pred.append(2)  # 兜底为故障类
 
-    for x in X:
-        d_all = {cls: mahalanobis(x, mu, cov_inv) for cls, (mu, cov_inv) in spaces.items()}
-        min_cls = min(d_all, key=d_all.get)
-        if d_all[min_cls] <= thresholds[min_cls]:
-            pred.append(min_cls)
-        else:
-            pred.append(2)  # 兜底设为故障类
+# === 输出混淆矩阵 ===
+cm = confusion_matrix(y_test, y_pred, labels=[0, 1, 2])
+df_result = pd.DataFrame(cm, index=['实际_健康', '实际_亚健康', '实际_故障'],
+                         columns=['预测_健康', '预测_亚健康', '预测_故障'])
+print(df_result)
 
-    y = np.array(y)
-    pred = np.array(pred)
-    cm = pd.crosstab(pd.Series(y, name='实际'), pd.Series(pred, name='预测'), rownames=['实际'], colnames=['预测'], dropna=False)
-    cm = cm.reindex(index=[0, 1, 2], columns=[0, 1, 2], fill_value=0)
+# === 亚健康类别的二分类评估 ===
+y_true_binary = (np.array(y_test) == 1).astype(int)
+y_pred_binary = (np.array(y_pred) == 1).astype(int)
 
-    FP = cm.loc[0, 1] + cm.loc[0, 2]
-    TN = cm.loc[0, 0]
-    FPR = FP / (FP + TN) if (FP + TN) != 0 else 0.0
-    TP1 = cm.loc[1, 1]
-    FN1 = cm.loc[1, 0] + cm.loc[1, 2]
-    recall_sub = TP1 / (TP1 + FN1) if (TP1 + FN1) != 0 else 0.0
-    TP2 = cm.loc[2, 2]
-    FN2 = cm.loc[2, 0] + cm.loc[2, 1]
-    recall_fault = TP2 / (TP2 + FN2) if (TP2 + FN2) != 0 else 0.0
+TP = np.sum((y_true_binary == 1) & (y_pred_binary == 1))
+FN = np.sum((y_true_binary == 1) & (y_pred_binary == 0))
+FP = np.sum((y_true_binary == 0) & (y_pred_binary == 1))
+TN = np.sum((y_true_binary == 0) & (y_pred_binary == 0))
 
-    results.append({
-        "转速": rpm,
-        "健康样本数": int(np.sum(y == 0)),
-        "亚健康样本数": int(np.sum(y == 1)),
-        "严重故障样本数": int(np.sum(y == 2)),
-        "误报率（健康误判为异常）": round(FPR * 100, 5),
-        "亚健康识别率": round(recall_sub * 100, 5),
-        "故障识别率": round(recall_fault * 100, 5)
-    })
+recall = TP / (TP + FN) if (TP + FN) != 0 else 0.0
+fpr = FP / (FP + TN) if (FP + TN) != 0 else 0.0
+precision = TP / (TP + FP) if (TP + FP) != 0 else 0.0
+f1 = 2 * precision * recall / (precision + recall) if (precision + recall) != 0 else 0.0
 
-results_df = pd.DataFrame(results)
-print(results_df.to_string(index=False))
+print(f"\n【亚健康识别指标 - 二分类视角】")
+print(f"TP（真正）     = {TP}")
+print(f"FN（假负）     = {FN}")
+print(f"FP（假正）     = {FP}")
+print(f"TN（真负）     = {TN}")
+print(f"Recall（召回率）= {recall:.4f}")
+print(f"FPR（误报率）   = {fpr:.4f}")
+print(f"Precision（精确率）= {precision:.4f}")
+print(f"F1 Score        = {f1:.4f}")

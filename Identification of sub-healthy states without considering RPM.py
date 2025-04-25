@@ -201,6 +201,6 @@ plt.grid(True)
 plt.tight_layout()
 
 # 保存图像
-save_path = os.path.join(FIGURE_PATH, "pca_health_subhealth_fault.png")
+save_path = os.path.join(FIGURE_PATH, "3-pca_health_subhealth_fault.png")
 plt.savefig(save_path)
 plt.close()

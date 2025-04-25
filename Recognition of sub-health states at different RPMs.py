@@ -214,7 +214,7 @@ for rpm in TARGET_RPMS:
     plt.tight_layout()
 
     # 图片命名：pca_rpm_1725_health_subhealth_fault.png
-    filename = f"pca_rpm_{rpm}_{'_'.join(label_names.values())}.png"
+    filename = f"3-pca_rpm_{rpm}_{'_'.join(label_names.values())}.png"
     save_path = os.path.join(FIGURE_PATH, filename)
     plt.savefig(save_path)
     plt.close()

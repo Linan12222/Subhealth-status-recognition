@@ -10,6 +10,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from scipy.spatial.distance import mahalanobis
+import matplotlib.pyplot as plt
 
 # ==== 固定随机种子 ====
 def set_seed(seed=42):
@@ -180,3 +181,40 @@ for rpm in TARGET_RPMS:
 
 results_df = pd.DataFrame(results)
 print(results_df.to_string(index=False))
+
+# 创建 figures 文件夹（如果不存在）
+FIGURE_PATH = "./figures"
+os.makedirs(FIGURE_PATH, exist_ok=True)
+
+# 三类状态标签对应名称和颜色
+label_names = {0: "health", 1: "subhealth", 2: "fault"}
+label_colors = {0: "green", 1: "orange", 2: "red"}
+
+# 保存每个转速下的 PCA 可视化图
+for rpm in TARGET_RPMS:
+    idx = rpm_test == rpm
+    X = X_test_pca[idx]
+    y = y_test[idx]
+
+    plt.figure(figsize=(8, 6))
+    for label in [0, 1, 2]:
+        mask = y == label
+        if np.any(mask):
+            plt.scatter(X[mask, 0], X[mask, 1],
+                        c=label_colors[label],
+                        label=label_names[label],
+                        alpha=0.6,
+                        edgecolors='k')
+
+    plt.xlabel("PCA Component 1")
+    plt.ylabel("PCA Component 2")
+    plt.title(f"PCA Visualization at RPM {rpm}")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+
+    # 图片命名：pca_rpm_1725_health_subhealth_fault.png
+    filename = f"pca_rpm_{rpm}_{'_'.join(label_names.values())}.png"
+    save_path = os.path.join(FIGURE_PATH, filename)
+    plt.savefig(save_path)
+    plt.close()

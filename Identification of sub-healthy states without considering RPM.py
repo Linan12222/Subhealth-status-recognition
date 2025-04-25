@@ -11,7 +11,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from scipy.spatial.distance import mahalanobis
 from sklearn.metrics import confusion_matrix
-
+import matplotlib.pyplot as plt
 # ==== 固定随机种子 ====
 def set_seed(seed=42):
     torch.manual_seed(seed)
@@ -174,3 +174,33 @@ print(f"Recall（召回率）= {recall:.4f}")
 print(f"FPR（误报率）   = {fpr:.4f}")
 print(f"Precision（精确率）= {precision:.4f}")
 print(f"F1 Score        = {f1:.4f}")
+# === 创建保存目录 ===
+FIGURE_PATH = "./figures"
+os.makedirs(FIGURE_PATH, exist_ok=True)
+
+# === 标签颜色定义 ===
+label_names = {0: "health", 1: "subhealth", 2: "fault"}
+label_colors = {0: "green", 1: "orange", 2: "red"}
+
+# === 绘制并保存整体 PCA 图 ===
+plt.figure(figsize=(8, 6))
+for label in [0, 1, 2]:
+    mask = np.array(y_test) == label
+    if np.any(mask):
+        plt.scatter(X_test_pca[mask, 0], X_test_pca[mask, 1],
+                    c=label_colors[label],
+                    label=label_names[label],
+                    alpha=0.6,
+                    edgecolors='k')
+
+plt.xlabel("PCA Component 1")
+plt.ylabel("PCA Component 2")
+plt.title("PCA Visualization of Health / Subhealth / Fault")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+
+# 保存图像
+save_path = os.path.join(FIGURE_PATH, "pca_health_subhealth_fault.png")
+plt.savefig(save_path)
+plt.close()

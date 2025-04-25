@@ -10,7 +10,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from scipy.spatial.distance import mahalanobis
-
+import matplotlib.pyplot as plt
 # ==== 固定随机种子 ====
 def set_seed(seed=42):
     torch.manual_seed(seed)
@@ -168,4 +168,24 @@ for rpm in TARGET_RPMS:
         "亚健康识别率": round(recall * 100, 2)
     })
 
+    # === 每个转速下的PCA可视化并保存 ===
+    FIGURE_PATH = "./figures"
+    os.makedirs(FIGURE_PATH, exist_ok=True)
+
+    plt.figure(figsize=(8, 6))
+    plt.scatter(X[y == 0, 0], X[y == 0, 1], c='green', label='Health', alpha=0.6, edgecolors='k')
+    plt.scatter(X[y == 1, 0], X[y == 1, 1], c='red', label='Subhealth', alpha=0.6, edgecolors='k')
+    plt.xlabel("PCA Component 1")
+    plt.ylabel("PCA Component 2")
+    plt.title(f"PCA Visualization at RPM {rpm}")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+
+    # 保存图像
+    save_path = os.path.join(FIGURE_PATH, f"2-pca_rpm_{rpm}.png")
+    plt.savefig(save_path)
+    plt.close()
+
 print(pd.DataFrame(results))
+

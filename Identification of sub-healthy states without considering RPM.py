@@ -10,6 +10,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from scipy.spatial.distance import mahalanobis
+import matplotlib.pyplot as plt
 
 # ==== 固定随机种子 ====
 def set_seed(seed=42):
@@ -161,3 +162,34 @@ print(f"[总体评估] TP: {TP}, FN: {FN}, FP: {FP}, TN: {TN}")
 print(f"健康样本数: {int(np.sum(y == 0))}, 亚健康样本数: {int(np.sum(y == 1))}")
 print(f"误报率（健康误判为异常）: {round(fpr * 100, 2)}%")
 print(f"亚健康识别率: {round(recall * 100, 2)}%")
+
+# === 添加 PCA 可视化功能 ===
+FIGURE_PATH = "./figures"
+os.makedirs(FIGURE_PATH, exist_ok=True)
+
+# 标签与颜色
+label_names = {0: "health", 1: "subhealth"}
+label_colors = {0: "green", 1: "red"}
+
+# 绘图
+plt.figure(figsize=(8, 6))
+for label in [0, 1]:
+    mask = np.array(y) == label
+    if np.any(mask):
+        plt.scatter(X[mask, 0], X[mask, 1],
+                    c=label_colors[label],
+                    label=label_names[label],
+                    alpha=0.6,
+                    edgecolors='k')
+
+plt.xlabel("PCA Component 1")
+plt.ylabel("PCA Component 2")
+plt.title("PCA Visualization of Health vs Subhealth")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+
+# 保存图像
+save_path = os.path.join(FIGURE_PATH, "2-pca_health_vs_subhealth.png")
+plt.savefig(save_path)
+plt.close()

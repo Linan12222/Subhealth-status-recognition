@@ -10,9 +10,10 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from scipy.spatial.distance import mahalanobis
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
+
 # ==== 固定随机种子 ====
-def set_seed(seed=42):
+def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
@@ -43,13 +44,16 @@ class Simple1DCNN(nn.Module):
         self.pool2 = nn.MaxPool1d(2)
         self.flatten = nn.Flatten()
         self.fc1 = nn.Linear(32 * (SEGMENT_LENGTH // 4), output_dim)
+        self.dropout = nn.Dropout(p=0.3)
 
     def forward(self, x):
         x = self.pool1(F.relu(self.conv1(x)))
         x = self.pool2(F.relu(self.conv2(x)))
         x = self.flatten(x)
         x = self.fc1(x)
+        x = self.dropout(x)  # 加在特征输出之后
         return x
+
 
 # ==== 加载数据 ====
 def load_data():
@@ -83,7 +87,7 @@ class CNNFeatureExtractor:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = Simple1DCNN().to(self.device)
         self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
 
     def train(self, X, y):
         dataset = torch.utils.data.TensorDataset(torch.tensor(X, dtype=torch.float32).unsqueeze(1),
@@ -168,24 +172,31 @@ for rpm in TARGET_RPMS:
         "亚健康识别率": round(recall * 100, 2)
     })
 
+
+
+
     # === 每个转速下的PCA可视化并保存 ===
-    FIGURE_PATH = "./figures"
-    os.makedirs(FIGURE_PATH, exist_ok=True)
+    # FIGURE_PATH = "./figures"
+    # os.makedirs(FIGURE_PATH, exist_ok=True)
 
-    plt.figure(figsize=(8, 6))
-    plt.scatter(X[y == 0, 0], X[y == 0, 1], c='green', label='Health', alpha=0.6, edgecolors='k')
-    plt.scatter(X[y == 1, 0], X[y == 1, 1], c='red', label='Subhealth', alpha=0.6, edgecolors='k')
-    plt.xlabel("PCA Component 1")
-    plt.ylabel("PCA Component 2")
-    plt.title(f"PCA Visualization at RPM {rpm}")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
+    # plt.figure(figsize=(8, 6))
+    # plt.scatter(X[y == 0, 0], X[y == 0, 1], c='green', label='Health', alpha=0.6, edgecolors='k')
+    # plt.scatter(X[y == 1, 0], X[y == 1, 1], c='red', label='Subhealth', alpha=0.6, edgecolors='k')
+    # plt.xlabel("PCA Component 1")
+    # plt.ylabel("PCA Component 2")
+    # plt.title(f"PCA Visualization at RPM {rpm}")
+    # plt.legend()
+    # plt.grid(True)
+    # plt.tight_layout()
+    #
+    # # 保存图像
+    # save_path = os.path.join(FIGURE_PATH, f"2-pca_rpm_{rpm}.png")
+    # plt.savefig(save_path)
+    # plt.close()
 
-    # 保存图像
-    save_path = os.path.join(FIGURE_PATH, f"2-pca_rpm_{rpm}.png")
-    plt.savefig(save_path)
-    plt.close()
+
+
+
 
 print(pd.DataFrame(results))
 
